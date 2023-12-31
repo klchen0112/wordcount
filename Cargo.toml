@@ -9,9 +9,5 @@ edition = "2021"
 dashmap = { version = "5.5.3", features = ["rayon"] }
 jieba-rs = "0.6.8"
 rayon = "1.8.0"
-regex = "1.10.2"
-serde = { version = "1.0.193"}
 serde_json = "1.0.108"
-r2d2 = "0.8.10"
-r2d2_sqlite = "0.23.0"
 rusqlite = { version = "0.30.0", features = ["bundled"] }
