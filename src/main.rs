@@ -75,13 +75,17 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
     let (sender, receiver): (Sender<Vec<String>>, Receiver<Vec<String>>) = bounded(64);
 
     let db_thread_handle = thread::spawn(move || {
-        match Connection::open("word_freq.db") {
-            Ok(conn) => {
-                if let Err(err) = create_tables(&conn) {
-                    eprintln!("Error creating tables: {}", err);
-                    return;
-                }
+        #[warn(unused_assignments)]
+        let mut iteration_counter = 0;
+        const PRINT_FREQUENCY: usize = 1000; // Adjust this value as needed
 
+        if let Ok(conn) = Connection::open("word_freq.db") {
+            if let Err(err) = create_tables(&conn) {
+                eprintln!("Error creating tables: {}", err);
+                return;
+            }
+            if let Ok(mut stmt_word) = conn.prepare_cached("INSERT INTO word_frequency (word, frequency) VALUES (?1, 1) ON CONFLICT(word) DO UPDATE SET frequency = frequency + 1") {
+            if let Ok(mut stmt_next_word) = conn.prepare_cached("INSERT INTO next_word_freq (id1, id2, frequency) VALUES (?1, ?2, 1) ON CONFLICT(id1, id2) DO UPDATE SET frequency = frequency + 1") {
                 while let Ok(words) = receiver.recv() {
                     let mut prev_word_id: Option<i64> = None;
 
@@ -93,33 +97,36 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
                                 |row| row.get(0),
                             ) {
                                 // Insert into word_frequency table
-                                if let Err(e) = conn.execute(
-                                    "INSERT INTO word_frequency (word, frequency) VALUES (?1, 1)
-                                ON CONFLICT(word) DO UPDATE SET frequency = frequency + 1",
-                                    [word],
-                                ) {
+                                if let Err(e) = stmt_word.execute([&word]) {
                                     eprintln!("Error executing query: {}", e);
                                 }
 
                                 // Insert into next_word_freq table
                                 if let Some(prev_id) = prev_word_id {
-                                    if let Err(e) = conn.execute(
-                                    "INSERT INTO next_word_freq (id1, id2, frequency) VALUES (?1, ?2, 1)
-                                    ON CONFLICT(id1, id2) DO UPDATE SET frequency = frequency + 1",
-                                    [&prev_id, &word_id],
-                                ) {
-                                    eprintln!("Error executing query: {}", e);
-                                }
+                                    if let Err(e) = stmt_next_word.execute([&prev_id, &word_id]) {
+                                        eprintln!("Error executing query: {}", e);
+                                    }
                                 }
                                 prev_word_id = Some(word_id);
                             }
                         }
                     }
                 }
+            } else {
+                eprintln!("Error preparing next_word_freq statement");
             }
-            Err(err) => {
-                eprintln!("Error opening connection: {}", err);
-            }
+        } else {
+            eprintln!("Error preparing word_frequency statement");
+        }
+        } else {
+            eprintln!("Error opening connection");
+        }
+
+        iteration_counter += 1;
+
+        if iteration_counter == PRINT_FREQUENCY {
+            println!("Processed {} iterations", iteration_counter);
+            iteration_counter = 0;
         }
     });
 
