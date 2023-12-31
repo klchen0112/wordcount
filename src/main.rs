@@ -1,3 +1,4 @@
+use crossbeam_channel::{bounded, Receiver, Sender};
 use jieba_rs::Jieba;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
@@ -7,7 +8,6 @@ use std::error::Error;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::sync::mpsc;
 use std::thread;
 
 fn create_tables(conn: &Connection) -> SqliteResult<()> {
@@ -72,7 +72,7 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
         .map(|entry| entry.path())
         .collect();
 
-    let (sender, receiver) = mpsc::sync_channel::<Vec<String>>(16); // Channel with a buffer of 16 messages
+    let (sender, receiver): (Sender<Vec<String>>, Receiver<Vec<String>>) = bounded(64);
 
     let db_thread_handle = thread::spawn(move || {
         match Connection::open("word_freq.db") {
@@ -89,14 +89,14 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
                         if !contains_special_characters(word) {
                             if let Ok(word_id) = conn.query_row(
                                 "SELECT id FROM word_frequency WHERE word = ?1",
-                                &[&word],
+                                [&word],
                                 |row| row.get(0),
                             ) {
                                 // Insert into word_frequency table
                                 if let Err(e) = conn.execute(
                                     "INSERT INTO word_frequency (word, frequency) VALUES (?1, 1)
                                 ON CONFLICT(word) DO UPDATE SET frequency = frequency + 1",
-                                    &[word],
+                                    [word],
                                 ) {
                                     eprintln!("Error executing query: {}", e);
                                 }
@@ -106,7 +106,7 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
                                     if let Err(e) = conn.execute(
                                     "INSERT INTO next_word_freq (id1, id2, frequency) VALUES (?1, ?2, 1)
                                     ON CONFLICT(id1, id2) DO UPDATE SET frequency = frequency + 1",
-                                    &[&prev_id, &word_id],
+                                    [&prev_id, &word_id],
                                 ) {
                                     eprintln!("Error executing query: {}", e);
                                 }
@@ -123,7 +123,7 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
         }
     });
 
-    let pool = ThreadPoolBuilder::new().num_threads(16).build().unwrap();
+    let pool = ThreadPoolBuilder::new().num_threads(32).build().unwrap();
 
     for path in paths {
         if let Ok(file) = fs::File::open(&path) {
@@ -134,7 +134,7 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
                         let json_data: Value = serde_json::from_str(&line).unwrap_or_default();
                         if let Some(text) = json_data.get("text").and_then(Value::as_str) {
                             let mut words: Vec<String> = Vec::new();
-                            let tokenized_words = jieba.cut(&text, true);
+                            let tokenized_words = jieba.cut(text, true);
 
                             for word in &tokenized_words {
                                 words.push(word.to_string());
@@ -149,8 +149,8 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
         }
     }
 
-    drop(sender); // Close the channel
-    db_thread_handle.join().unwrap(); // Wait for the database thread to finish
+    drop(sender); // Close the sender to signal completion
+    db_thread_handle.join().unwrap();
 
     Ok(())
 }
