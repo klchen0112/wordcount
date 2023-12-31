@@ -7,7 +7,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::io::{BufRead, BufReader};
 use dashmap::DashMap;
-use std::sync::{Arc, Mutex};
+
 
 fn contains_special_characters(s: &str) -> bool {
     for c in s.chars() {
@@ -53,31 +53,23 @@ fn write_to_csv_with_words(
     Ok(())
 }
 
-// fn write_to_csv_two_columns_with_words(
-//     file_name: &str,
-//     data: &DashMap<(usize, usize), usize>,
-//     word_id: &WordIdentifier,
-// ) -> Result<(), Box<dyn Error>> {
-//     let mut writer = Writer::from_path(file_name)?;
-//     writer.write_record(&["Word 1", "Word 2", "Frequency"])?;
+fn write_to_csv_two_columns_with_words(
+    file_name: &str,
+    data: &DashMap<(usize, usize), usize>,
+    id_word: &DashMap<usize,String>,
+) -> Result<(), Box<dyn Error>> {
+    let mut writer = Writer::from_path(file_name)?;
+    writer.write_record(&["Word 1", "Word 2", "Frequency"])?;
 
-//     for pair in data.iter() {
-//         let (word_id_1, word_id_2) = pair.key();
-//         let word_1 = word_id
-//             .map
-//             .get(&word_id_1)
-//             .map(|v| v.clone())
-//             .unwrap_or_else(|| "".to_string());
-//         let word_2 = word_id
-//             .map
-//             .get(&word_id_2)
-//             .map(|v| v.clone())
-//             .unwrap_or_else(|| "".to_string());
-//         writer.write_record(&[&word_1, &word_2, &pair.value().to_string()])?;
-//     }
-//     writer.flush()?;
-//     Ok(())
-// }
+    for pair in data.iter() {
+        let (word_id_1, word_id_2) = pair.key();
+        let word_1 = id_word.get(&word_id_1).unwrap();
+        let word_2 = id_word.get(&word_id_2).unwrap();
+        writer.write_record(&[&word_1, &word_2, &pair.value().to_string()])?;
+    }
+    writer.flush()?;
+    Ok(())
+}
 
 
 
@@ -97,30 +89,37 @@ fn process_single_jsonl_file(
             if let Some(text) = v.get("text").and_then(Value::as_str) {
                 let lines: Vec<&str> = text.split('\n').collect();
                 lines.into_par_iter().for_each(|line| {
-                    let tokens = jieba.cut(line, true);
-                    for token in &tokens {
+                    let tokens = jieba.cut(line, false);
+                    let mut token_iter = tokens.iter().peekable();
+                    while let Some(token) = token_iter.next() {
                         if contains_special_characters(token) {
                             continue;
                         }
-                        if let Some(wid) = word_id.get(&token[..]) {
-                            // *all_word_freq.entry(wid) += 1;
-                        } else {
-                            let wid = word_id.len();
-                            word_id.insert(token.to_string(), wid);
-                            all_word_freq.insert(wid,1);
+
+                        let fst_wid = match word_id.get(&token.to_string()) {
+                            Some(existing_id_ref) => *existing_id_ref,
+                            None => {
+                                let id = word_id.len();
+                                word_id.insert(token.to_string(), id);
+                                id
+                            }
+                        };
+                        *all_word_freq.entry(fst_wid).or_insert(0) += 1;
+
+                        if let Some(next_token) = token_iter.peek() {
+                            if !contains_special_characters(next_token) {
+                                let sec_wid = match word_id.get(&next_token.to_string()) {
+                                    Some(existing_id_ref) => *existing_id_ref,
+                                    None => {
+                                        let id = word_id.len();
+                                        word_id.insert(next_token.to_string(), id);
+                                        id
+                                    }
+                                };
+                                *all_next_word_freq.entry((fst_wid, sec_wid)).or_insert(0) += 1;
+                            }
                         }
                     }
-
-                    // for window in tokens.windows(2) {
-                    //     let first_token = window[0];
-                    //     let sec_token = window[1];
-                    //     if contains_special_characters(first_token) || contains_special_characters(sec_token) {
-                    //         continue;
-                    //     }
-                    //     let fst_wid = get_or_insert_word_id(first_token,&mut word_id);
-                    //     let sec_wid = get_or_insert_word_id(sec_token,&mut word_id);
-                    //     *all_next_word_freq.entry((fst_wid, sec_wid)).or_insert(0) += 1;
-                    // }
                 });
             }
         }
@@ -152,7 +151,7 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
                 ) {
                     eprintln!("Error processing file {:?}: {}", path, e);
                 } else {
-                    println!("Processing file {:?} success", path);
+                    // println!("Processing file {:?} success", path);
                 }
             }
         }
@@ -160,7 +159,7 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
 
     let id_word: DashMap<usize, String> = word_id.iter().map(|pair| (pair.value().clone(), pair.key().clone())).collect();
     write_to_csv_with_words("word_freq.csv", &all_word_freq,&id_word)?;
-    // write_to_csv_two_columns_with_words("next_word_freq.csv", &all_next_word_freq,&word_id)?;
+    write_to_csv_two_columns_with_words("next_word_freq.csv", &all_next_word_freq,&id_word)?;
 
     Ok(())
 }
