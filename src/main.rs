@@ -1,11 +1,14 @@
 use jieba_rs::Jieba;
-use rusqlite::{Connection, Result as SqliteResult};
 use serde_json::Value;
 use std::error::Error;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
+use rayon::prelude::*;
+use rusqlite::{Connection, Result as SqliteResult};
 
 fn create_tables(conn: &Connection) -> SqliteResult<()> {
     conn.execute(
@@ -66,40 +69,44 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
         .map(|entry| entry.path())
         .collect();
 
-    let conn = Connection::open("word_freq.db")?;
-    create_tables(&conn)?;
-    let conn_mutex = Arc::new(Mutex::new(conn));
+    let manager = SqliteConnectionManager::file("word_freq.db");
+    let pool = Pool::new(manager)?;
+    let conn = pool.get().unwrap();
+    if let Err(err) = create_tables(&conn) {
+        eprintln!("Error creating tables: {}", err);
+    }
 
-    for path in paths {
-        if let Some(extension) = path.extension() {
-            if extension == "jsonl" {
-                let file = fs::File::open(&path)?;
-                let reader = BufReader::new(file);
+    paths.par_iter().for_each(|path| {
+        if let Ok(file) = fs::File::open(&path) {
+            let reader = BufReader::new(file);
 
-                for line in reader.lines() {
-                    if let Ok(line) = line {
-                        let json_data: Value = serde_json::from_str(&line)?;
+            reader.lines().for_each(|line| {
+                if let Ok(line) = line {
+                    let json_data: Value = serde_json::from_str(&line).unwrap_or_default();
 
-                        if let Some(text) = json_data.get("text").and_then(Value::as_str) {
-                            let words = jieba.cut(text, false);
-                            let conn = conn_mutex.lock().unwrap();
+                    if let Some(text) = json_data.get("text").and_then(Value::as_str) {
+                        let words = jieba.cut(text, false);
+                        let pool = pool.clone();
+                        let conn_mutex = Arc::new(Mutex::new(pool.get().unwrap()));
 
-                            for word in words {
-                                if !contains_special_characters(word) {
-                                    // 插入或更新单词频率
-                                    conn.execute(
-                                        "INSERT INTO word_frequency (word, frequency) VALUES (?1, 1)
-                                        ON CONFLICT(word) DO UPDATE SET frequency = frequency + 1",
-                                        &[&word],
-                                    )?;
+                        words.into_iter().for_each(|word| {
+                            if !contains_special_characters(&word) {
+                                let conn = conn_mutex.lock().unwrap();
+                                if let Err(e) = conn.execute(
+                                    "INSERT INTO word_frequency (word, frequency) VALUES (?1, 1)
+                                    ON CONFLICT(word) DO UPDATE SET frequency = frequency + 1",
+                                    &[&word],
+                                ) {
+                                    eprintln!("Error executing query: {}", e);
                                 }
                             }
-                        }
+                        });
                     }
                 }
-            }
+            });
         }
-    }
+    });
+
     Ok(())
 }
 
