@@ -89,33 +89,19 @@ fn process_single_jsonl_file(
             if let Some(text) = v.get("text").and_then(Value::as_str) {
                 let lines: Vec<&str> = text.split('\n').collect();
                 lines.into_par_iter().for_each(|line| {
-                    let tokens = jieba.cut(line, false);
+                    let tokens = jieba.cut(line, true);
                     let mut token_iter = tokens.iter().peekable();
                     while let Some(token) = token_iter.next() {
                         if contains_special_characters(token) {
                             continue;
                         }
 
-                        let fst_wid = match word_id.get(&token.to_string()) {
-                            Some(existing_id_ref) => *existing_id_ref,
-                            None => {
-                                let id = word_id.len();
-                                word_id.insert(token.to_string(), id);
-                                id
-                            }
-                        };
+                        let fst_wid = word_id.hash_usize(&token.to_string());
                         *all_word_freq.entry(fst_wid).or_insert(0) += 1;
 
                         if let Some(next_token) = token_iter.peek() {
                             if !contains_special_characters(next_token) {
-                                let sec_wid = match word_id.get(&next_token.to_string()) {
-                                    Some(existing_id_ref) => *existing_id_ref,
-                                    None => {
-                                        let id = word_id.len();
-                                        word_id.insert(next_token.to_string(), id);
-                                        id
-                                    }
-                                };
+                                let sec_wid = word_id.hash_usize(&next_token.to_string());
                                 *all_next_word_freq.entry((fst_wid, sec_wid)).or_insert(0) += 1;
                             }
                         }
