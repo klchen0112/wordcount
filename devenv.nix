@@ -13,7 +13,7 @@
 
   # https://devenv.sh/languages/
   # languages.nix.enable = true;
-   languages.rust = {
+  languages.rust = {
     enable = true;
     # https://devenv.sh/reference/options/#languagesrustchannel
     channel = "stable";
@@ -21,6 +21,7 @@
     components = [ "rustc" "cargo" "clippy" "rustfmt" "rust-analyzer" ];
   };
 
+  
   packages = with pkgs; [
     git
     libiconvReal

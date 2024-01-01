@@ -159,6 +159,8 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
                                     word_to_id.insert(token.to_string(), *id_count_lock);
                                     word_id = *id_count_lock;
                                     *id_count_lock += 1;
+                                } else {
+                                    word_id = *word_to_id.get(token).unwrap();
                                 }
                             }
 
