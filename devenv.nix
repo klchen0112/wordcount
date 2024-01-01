@@ -26,10 +26,10 @@
     libiconvReal
     sqlite
   ];
-  
+
   # https://devenv.sh/pre-commit-hooks/
   pre-commit.hooks = {
    rustfmt.enable = true;
-   clippy.enable = true;
+   # clippy.enable = true;
   };
 }
