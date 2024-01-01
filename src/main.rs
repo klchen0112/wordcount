@@ -81,7 +81,7 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
         .map(|entry| entry.path())
         .collect();
 
-    let (sender, receiver): (Sender<Vec<String>>, Receiver<Vec<String>>) = bounded(10000);
+    let (sender, receiver): (Sender<Vec<String>>, Receiver<Vec<String>>) = bounded(1000);
 
     let db_thread_handle = thread::spawn(move || {
         const CACHE_LIMIT: usize = 10000; // Adjust this value as needed
@@ -206,7 +206,7 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
 }
 
 fn main() {
-    env::set_var("RAYON_NUM_THREADS", "20");
+    env::set_var("RAYON_NUM_THREADS", "8");
     if let Err(e) = process_jsonl_files("data") {
         eprintln!("Error: {}", e);
     } else {
