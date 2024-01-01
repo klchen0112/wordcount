@@ -28,23 +28,23 @@ def write_string_i64_map_to_csv(file_name, _map):
         for key, value in _map.items():
             file.write(f"{key},{value}\n")
 
-def process_jsonl_file(file_path, word_to_id, id_to_word, id_count, lock):
+def process_jsonl_file(file_path, word_to_id, id_to_word, id_count, ltp_model):
 
-    ltp = LTP("./model/legacy")
+    ltp = ltp_model
 
     with open(file_path, 'r') as file:
-        lines = file.readlines()
+        print(file_path)
         word_freq = {}
         next_word_freq = {}
-
-        for line in lines:
+        line = file.readline()
+        while line:
+            line = line.strip()
             json_data = json.loads(line)
             text = json_data.get("text", "")
+            text = text.strip()
             text_lines = text.split('\n')
-
-            for t_line in text_lines:
-                tokens = ltp.pipeline([t_line], tasks=["cws", "pos", "ner"]).to_tuple()[0]
-                print(type(tokens))
+            tokens_list = ltp.pipeline(text_lines, tasks=["cws"]).cws
+            for tokens in tokens_list:
                 word_id = -1
                 prev_word_id = -1
 
@@ -54,13 +54,11 @@ def process_jsonl_file(file_path, word_to_id, id_to_word, id_count, lock):
 
                     if token in word_to_id:
                         pass
-                    elif len(id_count) > 0:
-                        with lock:
-                            if token not in word_to_id:
-                                word_to_id[token] = id_count[0]
-                                id_to_word[id_count[0]] = token
-                                word_id = id_count[0]
-                                id_count[0] += 1
+                    else:
+                        word_to_id[token] = id_count[0]
+                        id_to_word[id_count[0]] = token
+                        word_id = id_count[0]
+                        id_count[0] += 1
                     word_id = word_to_id[token]
                     word_freq[word_id] = word_freq.get(word_id, 0) + 1
 
@@ -68,6 +66,7 @@ def process_jsonl_file(file_path, word_to_id, id_to_word, id_count, lock):
                         next_word_freq[(prev_word_id, word_id)] = next_word_freq.get((prev_word_id, word_id), 0) + 1
 
                     prev_word_id = word_id
+            line = file.readline()
 
         file_name_word_freq = f"results/word_freq/{os.path.basename(file_path)}.csv"
         file_name_next_word_freq = f"results/next_word_freq/{os.path.basename(file_path)}.csv"
@@ -79,18 +78,18 @@ def process_jsonl_file(file_path, word_to_id, id_to_word, id_count, lock):
 
 if __name__ == "__main__":
     directory_path = "data"  # Path to your JSONL files
+    os.makedirs("results/word_freq",exist_ok=True)
+    os.makedirs("results/next_word_freq",exist_ok=True)
     file_paths = [os.path.join(directory_path, file) for file in os.listdir(directory_path) if file.endswith(".jsonl")]
 
-    manager = Manager()
-    word_to_id = manager.dict()
-    id_to_word = manager.dict()
-    id_count = manager.list([0])
-    lock = manager.Lock()
+    word_to_id = dict()
+    id_to_word = dict()
+    id_count = [0]
+    ltp_model = LTP("./model/legacy")
 
-    pool = Pool(processes=8)  # Use 16 processes
-    pool.starmap(process_jsonl_file, [(file_path, word_to_id, id_to_word, id_count, lock) for file_path in file_paths])
-    pool.close()
-    pool.join()
+    for file_path in file_paths:
+        process_jsonl_file(file_path, word_to_id, id_to_word, id_count, ltp_model=ltp_model)
+
 
     file_name_word_to_id = "results/word_to_id.csv"
     write_string_i64_map_to_csv(file_name_word_to_id, word_to_id)
