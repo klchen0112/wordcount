@@ -143,7 +143,7 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
                 if let Some(text) = json_data.get("text").and_then(Value::as_str) {
                     let text_lines: Vec<&str> = text.split('\n').collect();
                     for t_line in text_lines {
-                        let tokenized_words = jieba.cut(t_line, false);
+                        let tokenized_words = jieba.cut(t_line, true);
                         let mut word_id: i64 = -1;
                         let mut prev_word_id: i64 = -1;
                         for token in tokenized_words {
