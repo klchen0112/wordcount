@@ -4,7 +4,7 @@ use rayon::prelude::*;
 use rusqlite::params;
 use rusqlite::{Connection, Result as SqliteResult};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::error::Error;
 use std::fs;
@@ -81,14 +81,14 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
         .map(|entry| entry.path())
         .collect();
 
-    let (sender, receiver): (Sender<Vec<String>>, Receiver<Vec<String>>) = bounded(1000);
+    let (sender, receiver): (Sender<Vec<String>>, Receiver<Vec<String>>) = bounded(10000);
 
     let db_thread_handle = thread::spawn(move || {
         const CACHE_LIMIT: usize = 10000; // Adjust this value as needed
-        let mut word_to_id = HashMap::<String, i64>::new();
-        let mut id_to_word = HashMap::<i64, String>::new();
-        let mut word_freq = HashMap::<i64, i64>::new();
-        let mut next_word_freq = HashMap::<(i64, i64), i64>::new();
+        let mut word_to_id = BTreeMap::<String, i64>::new();
+        let mut id_to_word = BTreeMap::<i64, String>::new();
+        let mut word_freq = BTreeMap::<i64, i64>::new();
+        let mut next_word_freq = BTreeMap::<(i64, i64), i64>::new();
         if let Ok(conn) = Connection::open("word_freq.db") {
             if let Err(err) = create_tables(&conn) {
                 eprintln!("Error creating tables: {}", err);
