@@ -1,46 +1,18 @@
-use crossbeam_channel::{bounded, Receiver, Sender};
+use dashmap::DashMap;
 use jieba_rs::Jieba;
 use rayon::prelude::*;
-use rusqlite::params;
-use rusqlite::{Connection, Result as SqliteResult};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::error::Error;
 use std::fs;
+use std::fs::File;
+use std::io::prelude::*;
+use std::io::BufWriter;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::thread;
-
-fn create_tables(conn: &Connection) -> SqliteResult<()> {
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS word_frequency (
-            id INTEGER PRIMARY KEY,
-            word TEXT UNIQUE, -- 设置 word 列为唯一
-            frequency INTEGER
-        )",
-        [],
-    )?;
-
-    // // 添加对 word 字段的索引
-    // conn.execute(
-    //     "CREATE INDEX IF NOT EXISTS idx_word_frequency_word ON word_frequency (word)",
-    //     [],
-    // )?;
-
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS next_word_freq (
-            id1 INTEGER,
-            id2 INTEGER,
-            frequency INTEGER,
-            PRIMARY KEY (id1, id2),
-            FOREIGN KEY (id1) REFERENCES word_frequency(id),
-            FOREIGN KEY (id2) REFERENCES word_frequency(id)
-        )",
-        [],
-    )?;
-    Ok(())
-}
 
 fn contains_special_characters(s: &str) -> bool {
     for c in s.chars() {
@@ -66,6 +38,78 @@ fn contains_special_characters(s: &str) -> bool {
     false
 }
 
+fn write_i64_i64_map_to_csv(
+    file_name: &str,
+    map: &DashMap<i64, i64>,
+) -> Result<(), Box<dyn Error>> {
+    let cloned_map = map.clone(); // Clone the map to move it into the thread
+
+    let file_name = Arc::new(Mutex::new(file_name.to_string())); // Create an Arc<Mutex<_>> to share file_name
+
+    let file_name_clone = Arc::clone(&file_name); // Clone for the thread
+
+    thread::spawn(move || {
+        let file_name = file_name_clone.lock().unwrap(); // Lock to access the file_name
+        let file = File::create(&*file_name).expect("Failed to create file");
+        let mut writer = BufWriter::new(file);
+
+        for pair in cloned_map.iter() {
+            let (key, value) = pair.pair();
+            writeln!(writer, "{},{}", key, value).expect("Failed to write to file");
+        }
+
+        writer.flush().expect("Failed to flush buffer");
+    })
+    .join()
+    .expect("Thread panicked");
+
+    Ok(())
+}
+
+fn write_tuple_i64_i64_map_to_csv(
+    file_name: &str,
+    map: &DashMap<(i64, i64), i64>,
+) -> Result<(), Box<dyn Error>> {
+    let cloned_map = map.clone(); // Clone the map to move it into the thread
+
+    let file_name = Arc::new(Mutex::new(file_name.to_string())); // Create an Arc<Mutex<_>> to share file_name
+
+    let file_name_clone = Arc::clone(&file_name); // Clone for the thread
+
+    thread::spawn(move || {
+        let file_name = file_name_clone.lock().unwrap(); // Lock to access the file_name
+        let file = File::create(&*file_name).expect("Failed to create file");
+        let mut writer = BufWriter::new(file);
+
+        for pair in cloned_map.iter() {
+            let ((key1, key2), value) = pair.pair();
+            writeln!(writer, "{},{},{}", key1, key2, value).expect("Failed to write to file");
+        }
+
+        writer.flush().expect("Failed to flush buffer");
+    })
+    .join()
+    .expect("Thread panicked");
+
+    Ok(())
+}
+
+fn write_string_i64_map_to_csv(
+    file_name: &str,
+    map: &DashMap<String, i64>,
+) -> Result<(), Box<dyn Error>> {
+    let file = File::create(file_name)?;
+    let mut writer = BufWriter::new(file);
+
+    for pair in map.iter() {
+        let (key, value) = pair.pair();
+        writeln!(writer, "{},{}", key, value)?;
+    }
+
+    writer.flush()?;
+    Ok(())
+}
+
 fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
     let jieba = Jieba::new();
 
@@ -81,132 +125,72 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
         .map(|entry| entry.path())
         .collect();
 
-    let (sender, receiver): (Sender<Vec<String>>, Receiver<Vec<String>>) = bounded(10000);
-
-    let db_thread_handle = thread::spawn(move || {
-        const CACHE_LIMIT: usize = 10000; // Adjust this value as needed
-        let mut word_to_id = BTreeMap::<String, i64>::new();
-        let mut id_to_word = BTreeMap::<i64, String>::new();
-        let mut word_freq = BTreeMap::<i64, i64>::new();
-        let mut next_word_freq = BTreeMap::<(i64, i64), i64>::new();
-        if let Ok(conn) = Connection::open("word_freq.db") {
-            if let Err(err) = create_tables(&conn) {
-                eprintln!("Error creating tables: {}", err);
-                return;
-            }
-
-            while let Ok(words) = receiver.recv() {
-                let mut prev_word_id: i64 = -1;
-                for word in words.iter().map(|s| s.as_str()) {
-                    if !contains_special_characters(word) {
-                        // Insert into word_frequency table
-                        let key = word.to_string();
-                        if !word_to_id.contains_key(&key) {
-                            id_to_word.insert(word_to_id.len() as i64, key.clone());
-                            word_to_id.insert(key.clone(), word_to_id.len() as i64);
-                        }
-                        if let Some(word_id) = word_to_id.get(&key) {
-                            *word_freq.entry(*word_id).or_insert(0) += 1;
-
-                            // Insert into next_word_freq table
-                            if prev_word_id != -1 {
-                                *next_word_freq.entry((prev_word_id, *word_id)).or_insert(0) += 1;
-                            }
-                            prev_word_id = *word_id;
-                        }
-                    }
-                }
-                if word_freq.len() >= CACHE_LIMIT {
-                    if let Ok(mut stmt_word) = conn.prepare_cached("INSERT INTO word_frequency (id, word, frequency) VALUES (?1, ?2, ?3) ON CONFLICT(word) DO UPDATE SET frequency = frequency + ?3") {
-                        conn.execute_batch("BEGIN").unwrap();
-
-                        for (word_id, freq) in &word_freq {
-                            if let Some(word) = id_to_word.get(word_id) {
-                                stmt_word.execute(params![word_id, word, freq]).expect("Failed to execute statement for word_frequency");
-                            }
-                        }
-
-                        conn.execute_batch("COMMIT").unwrap();
-                        word_freq.clear();
-                    }
-
-                    if let Ok(mut stmt_next_word) = conn.prepare_cached("INSERT INTO next_word_freq (id1, id2, frequency) VALUES (?1, ?2, ?3) ON CONFLICT(id1, id2) DO UPDATE SET frequency = frequency + ?3") {
-                        conn.execute_batch("BEGIN").unwrap();
-                        for ((id1, id2), freq) in &next_word_freq {
-                            stmt_next_word.execute(params![id1, id2, freq]).expect("Failed to execute statement for next_word_freq");
-                        }
-
-                        conn.execute_batch("COMMIT").unwrap();
-                        next_word_freq.clear();
-                    }
-                }
-            }
-
-            if let Ok(mut stmt_word) = conn.prepare_cached("INSERT INTO word_frequency (id, word, frequency) VALUES (?1, ?2, ?3) ON CONFLICT(word) DO UPDATE SET frequency = frequency + ?3") {
-                conn.execute_batch("BEGIN").unwrap();
-
-                for (word_id, freq) in &word_freq {
-                    if let Some(word) = id_to_word.get(word_id) {
-                        stmt_word.execute(params![word_id, word, freq]).expect("Failed to execute statement for word_frequency");
-                    }
-                }
-
-                conn.execute_batch("COMMIT").unwrap();
-                word_freq.clear();
-            }
-
-            if let Ok(mut stmt_next_word) = conn.prepare_cached("INSERT INTO next_word_freq (id1, id2, frequency) VALUES (?1, ?2, ?3) ON CONFLICT(id1, id2) DO UPDATE SET frequency = frequency + ?3") {
-                conn.execute_batch("BEGIN").unwrap();
-
-                for ((id1, id2), freq) in &next_word_freq {
-                    stmt_next_word.execute(params![id1, id2, freq]).expect("Failed to execute statement for next_word_freq");
-                }
-
-                conn.execute_batch("COMMIT").unwrap();
-                next_word_freq.clear();
-            }
-        }
-    });
-
+    fs::create_dir_all("results/word_freq")?;
+    fs::create_dir_all("results/next_word_freq")?;
+    let word_to_id: DashMap<String, i64> = DashMap::new();
+    let id_to_word: DashMap<i64, String> = DashMap::new();
+    let id_count = Arc::new(Mutex::<i64>::new(0));
     for path in paths {
         let file_name = path.file_name().unwrap().to_string_lossy().into_owned();
 
         if let Ok(file) = fs::File::open(&path) {
             let reader = BufReader::new(file);
-            let lines: Vec<_> = reader.lines().filter_map(Result::ok).collect();
-
+            let lines: Vec<_> = reader.lines().map_while(Result::ok).collect();
+            let word_freq: DashMap<i64, i64> = DashMap::with_capacity(65536);
+            let next_word_freq: DashMap<(i64, i64), i64> = DashMap::with_capacity(65536);
             lines.par_iter().for_each(|line| {
-                let json_data: Value = serde_json::from_str(&line).unwrap_or_default();
+                let json_data: Value = serde_json::from_str(line).unwrap_or_default();
                 if let Some(text) = json_data.get("text").and_then(Value::as_str) {
                     let text_lines: Vec<&str> = text.split('\n').collect();
                     for t_line in text_lines {
-                        let mut words: Vec<String> = Vec::new();
-                        let tokenized_words = jieba.cut(t_line, true);
+                        let tokenized_words = jieba.cut(t_line, false);
+                        let mut word_id: i64 = -1;
+                        let mut prev_word_id: i64 = -1;
+                        for token in tokenized_words {
+                            if contains_special_characters(token) {
+                                continue;
+                            }
 
-                        for word in &tokenized_words {
-                            words.push(word.to_string());
+                            if let Some(existing_id) = word_to_id.get(token) {
+                                word_id = *existing_id;
+                            } else if let Ok(mut id_count_lock) = id_count.lock() {
+                                if !word_to_id.contains_key(token) {
+                                    id_to_word.insert(*id_count_lock, token.to_string());
+                                    word_to_id.insert(token.to_string(), *id_count_lock);
+                                    word_id = *id_count_lock;
+                                    *id_count_lock += 1;
+                                }
+                            }
+
+                            *word_freq.entry(word_id).or_insert(0) += 1;
+
+                            *word_freq.entry(word_id).or_insert(0) += 1;
+                            if prev_word_id >= 0 {
+                                *next_word_freq.entry((prev_word_id, word_id)).or_insert(0) += 1;
+                            }
+                            prev_word_id = word_id;
                         }
-
-                        let _ = sender.send(words.clone());
                     }
                 }
             });
             rayon::join(|| {}, || {});
 
-            // Mark file as processed
+            let file_name_word_freq = format!("results/word_freq/{}.csv", file_name);
+            let file_name_next_word_freq = format!("results/next_word_freq/{}.csv", file_name);
+
+            write_i64_i64_map_to_csv(&file_name_word_freq, &word_freq)?;
+            write_tuple_i64_i64_map_to_csv(&file_name_next_word_freq, &next_word_freq)?;
 
             println!("{}", file_name);
         }
     }
-
-    drop(sender); // Close the sender to signal completion
-    let _ = db_thread_handle.join();
-
+    let file_name_word_to_id = "results/word_to_id.csv";
+    write_string_i64_map_to_csv(file_name_word_to_id, &word_to_id)?;
     Ok(())
 }
 
 fn main() {
-    env::set_var("RAYON_NUM_THREADS", "8");
+    env::set_var("RAYON_NUM_THREADS", "16");
     if let Err(e) = process_jsonl_files("data") {
         eprintln!("Error: {}", e);
     } else {
