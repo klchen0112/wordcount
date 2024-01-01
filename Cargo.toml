@@ -11,4 +11,3 @@ jieba-rs = "0.6.8"
 rayon = "1.8.0"
 serde_json = "1.0.108"
 rusqlite = { version = "0.30.0", features = ["bundled"] }
-crossbeam-channel = "0.5.10"
