@@ -13,6 +13,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
+use threadpool::ThreadPool;
 
 fn contains_special_characters(s: &str) -> bool {
     for c in s.chars() {
@@ -96,6 +97,7 @@ fn write_tuple_i64_i64_map_to_csv(
 
 fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
     let jieba = Jieba::new();
+    let pool = ThreadPool::new(4); // Change the number as per your requirement
 
     let paths: Vec<PathBuf> = fs::read_dir(directory_path)?
         .filter_map(Result::ok)
@@ -148,18 +150,22 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
 
             let file_name_word_freq = format!("results/word_freq/{}.csv", file_name);
             let file_name_next_word_freq = format!("results/next_word_freq/{}.csv", file_name);
-
-            write_i64_i64_map_to_csv(&file_name_word_freq, &word_freq)?;
-            write_tuple_i64_i64_map_to_csv(&file_name_next_word_freq, &next_word_freq)?;
+            pool.execute(move || {
+                write_i64_i64_map_to_csv(&file_name_word_freq, &word_freq).unwrap();
+            });
+            pool.execute(move || {
+                write_tuple_i64_i64_map_to_csv(&file_name_next_word_freq, &next_word_freq).unwrap();
+            });
 
             println!("{}", file_name);
         }
     }
+    pool.join();
     Ok(())
 }
 
 fn main() {
-    env::set_var("RAYON_NUM_THREADS", "8");
+    env::set_var("RAYON_NUM_THREADS", "16");
     if let Err(e) = process_jsonl_files("data") {
         eprintln!("Error: {}", e);
     } else {
