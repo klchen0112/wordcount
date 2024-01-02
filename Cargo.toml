@@ -10,4 +10,3 @@ dashmap = { version = "5.5.3", features = ["rayon"] }
 jieba-rs = "0.6.8"
 rayon = "1.8.0"
 serde_json = "1.0.108"
-threadpool = "1.8.1"
