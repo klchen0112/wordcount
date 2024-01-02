@@ -5,9 +5,11 @@ use std::env;
 use std::error::Error;
 use std::fs;
 use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::BufWriter;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
+use threadpool::ThreadPool;
 
 fn contains_special_characters(s: &str) -> bool {
     for c in s.chars() {
@@ -98,6 +100,8 @@ fn process_line(
 
 fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
     let jieba = Jieba::new();
+    let pool = ThreadPool::new(2); // Change the number as per your requirement
+
     fs::create_dir_all("results/word_freq")?;
     fs::create_dir_all("results/next_word_freq")?;
     let processed_files: DashSet<String> = DashSet::new(); // Store processed filenames
@@ -121,6 +125,14 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
         })
         .map(|entry| entry.path())
         .collect();
+    let visit_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("results/visit.txt")
+        .expect("Failed to open or create visit.txt");
+
+    // Wrap the file in a BufWriter for buffering
+    let mut visit_file = BufWriter::new(visit_file);
 
     for path in paths {
         let file_name = path.file_name().unwrap().to_string_lossy().into_owned();
@@ -140,19 +152,22 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
             let file_name_word_freq = format!("results/word_freq/{}.csv", file_name);
             let file_name_next_word_freq = format!("results/next_word_freq/{}.csv", file_name);
 
-            write_i64_i64_map_to_csv(&file_name_word_freq, &word_freq).unwrap();
+            pool.execute(move || {
+                write_i64_i64_map_to_csv(&file_name_word_freq, &word_freq).unwrap();
+            });
 
-            write_tuple_i64_i64_map_to_csv(&file_name_next_word_freq, &next_word_freq).unwrap();
-
+            pool.execute(move || {
+                write_tuple_i64_i64_map_to_csv(&file_name_next_word_freq, &next_word_freq).unwrap();
+            });
+            pool.join();
             println!("{}", file_name);
 
             // Mark the file as processed
             processed_files.insert(file_name.clone());
 
             // Write the processed filename into visit.txt
-            if let Ok(mut visit_file) = File::create("results/visit.txt").map(BufWriter::new) {
-                writeln!(visit_file, "{}", file_name).expect("Failed to write to visit.txt");
-            }
+
+            writeln!(visit_file, "{}", file_name).expect("Failed to write to visit.txt");
         }
     }
 
