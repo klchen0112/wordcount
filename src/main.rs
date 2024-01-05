@@ -1,5 +1,5 @@
 use dashmap::{DashMap, DashSet};
-use jieba_rs::Jieba;
+use ltp::{CWSModel, Codec, Format, ModelSerde};
 use rayon::prelude::*;
 use std::env;
 use std::error::Error;
@@ -73,33 +73,35 @@ fn process_line(
     line: Result<String, std::io::Error>,
     word_freq: &DashMap<String, i64>,
     next_word_freq: &DashMap<(String, String), i64>,
-    jieba: &Jieba,
+    cws: &CWSModel,
 ) {
     if let Ok(text) = line {
         let text_lines: Vec<&str> = text.split('\n').collect();
         for t_line in text_lines {
-            let tokenized_words = jieba.cut(t_line, true);
-            let mut prev_word: &str = "";
-            for token in tokenized_words {
-                if contains_special_characters(token) {
-                    prev_word = "";
-                    continue;
-                }
-                *word_freq.entry(token.to_string()).or_insert(0) += 1;
+            if let Ok(tokenized_words) = cws.predict(t_line) {
+                let mut prev_word: &str = "";
+                for token in tokenized_words {
+                    if contains_special_characters(token) {
+                        prev_word = "";
+                        continue;
+                    }
+                    *word_freq.entry(token.to_string()).or_insert(0) += 1;
 
-                if !prev_word.is_empty() {
-                    *next_word_freq
-                        .entry((prev_word.to_string(), token.to_string()))
-                        .or_insert(0) += 1;
+                    if !prev_word.is_empty() {
+                        *next_word_freq
+                            .entry((prev_word.to_string(), token.to_string()))
+                            .or_insert(0) += 1;
+                    }
+                    prev_word = token;
                 }
-                prev_word = token;
             }
         }
     }
 }
 
 fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
-    let jieba = Jieba::new();
+    let file = File::open("model/legacy/cws_model.bin")?;
+    let cws: CWSModel = ModelSerde::load(file, Format::AVRO(Codec::Deflate))?;
     let pool = ThreadPool::new(2); // Change the number as per your requirement
 
     fs::create_dir_all("results/word_freq")?;
@@ -146,7 +148,7 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
             reader
                 .lines()
                 .par_bridge()
-                .for_each(|line| process_line(line, &word_freq, &next_word_freq, &jieba));
+                .for_each(|line| process_line(line, &word_freq, &next_word_freq, &cws));
             rayon::join(|| {}, || {});
 
             let file_name_word_freq = format!("results/word_freq/{}.csv", file_name);
@@ -175,7 +177,7 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
 }
 
 fn main() {
-    env::set_var("RAYON_NUM_THREADS", "16");
+    env::set_var("RAYON_NUM_THREADS", "8");
     if let Err(e) = process_jsonl_files("data") {
         eprintln!("Error: {}", e);
     } else {
