@@ -9,7 +9,6 @@ use std::fs::OpenOptions;
 use std::io::BufWriter;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use threadpool::ThreadPool;
 
 fn contains_special_characters(s: &str) -> bool {
     for c in s.chars() {
@@ -99,10 +98,42 @@ fn process_line(
     }
 }
 
+fn process_line_from_json(
+    json_text: &str,
+    word_freq: &DashMap<String, i64>,
+    next_word_freq: &DashMap<(String, String), i64>,
+    cws: &CWSModel,
+) {
+    // 解析JSON，获取text字段
+    if let Ok(parsed_json) = serde_json::from_str::<serde_json::Value>(json_text) {
+        if let Some(text_value) = parsed_json.get("text") {
+            if let Some(text) = text_value.as_str() {
+                // 进行分词
+                let tokenized_words = cws.predict(text).unwrap_or_else(|_| Vec::new());
+
+                let mut prev_word: &str = "";
+                for token in tokenized_words {
+                    if contains_special_characters(token) {
+                        prev_word = "";
+                        continue;
+                    }
+                    *word_freq.entry(token.to_string()).or_insert(0) += 1;
+
+                    if !prev_word.is_empty() {
+                        *next_word_freq
+                            .entry((prev_word.to_string(), token.to_string()))
+                            .or_insert(0) += 1;
+                    }
+                    prev_word = token;
+                }
+            }
+        }
+    }
+}
+
 fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
     let file = File::open("model/legacy/cws_model.bin")?;
     let cws: CWSModel = ModelSerde::load(file, Format::AVRO(Codec::Deflate))?;
-    let pool = ThreadPool::new(2); // Change the number as per your requirement
 
     fs::create_dir_all("results/word_freq")?;
     fs::create_dir_all("results/next_word_freq")?;
@@ -120,7 +151,7 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
         .filter_map(Result::ok)
         .filter(|entry| {
             if let Some(extension) = entry.path().extension() {
-                extension == "jsonl"
+                extension == "jsonl" || extension == "txt"
             } else {
                 false
             }
@@ -148,20 +179,27 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
             reader
                 .lines()
                 .par_bridge()
-                .for_each(|line| process_line(line, &word_freq, &next_word_freq, &cws));
+                .for_each(|line| match path.extension() {
+                    Some(ext) if ext == "jsonl" => process_line_from_json(
+                        &line.unwrap_or_default(),
+                        &word_freq,
+                        &next_word_freq,
+                        &cws,
+                    ),
+                    Some(ext) if ext == "txt" => {
+                        process_line(line, &word_freq, &next_word_freq, &cws)
+                    }
+                    _ => (),
+                });
             rayon::join(|| {}, || {});
 
             let file_name_word_freq = format!("results/word_freq/{}.csv", file_name);
             let file_name_next_word_freq = format!("results/next_word_freq/{}.csv", file_name);
 
-            pool.execute(move || {
-                write_i64_i64_map_to_csv(&file_name_word_freq, &word_freq).unwrap();
-            });
+            write_i64_i64_map_to_csv(&file_name_word_freq, &word_freq).unwrap();
 
-            pool.execute(move || {
-                write_tuple_i64_i64_map_to_csv(&file_name_next_word_freq, &next_word_freq).unwrap();
-            });
-            pool.join();
+            write_tuple_i64_i64_map_to_csv(&file_name_next_word_freq, &next_word_freq).unwrap();
+
             println!("{}", file_name);
 
             // Mark the file as processed
