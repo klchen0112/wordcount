@@ -1,5 +1,5 @@
 use dashmap::{DashMap, DashSet};
-use ltp::{CWSModel, Codec, Format, ModelSerde};
+use jieba_rs::Jieba;
 use rayon::prelude::*;
 use std::env;
 use std::error::Error;
@@ -9,30 +9,6 @@ use std::fs::OpenOptions;
 use std::io::BufWriter;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-
-fn contains_special_characters(s: &str) -> bool {
-    for c in s.chars() {
-        if c.is_ascii_punctuation() || c.is_ascii_whitespace() || c.is_control() {
-            return true;
-        }
-        // 中文标点范围：\u{3000}-\u{303F}
-        if ('\u{3000}'..='\u{303F}').contains(&c) {
-            return true;
-        }
-        // 中文书名号范围：\u{3008}-\u{3011}
-        if ('\u{3008}'..='\u{3011}').contains(&c) {
-            return true;
-        }
-        // 全角ASCII范围：\u{FF00}-\u{FFEF}
-        if ('\u{FF00}'..='\u{FFEF}').contains(&c) {
-            return true;
-        }
-        if c == '"' || c == '“' || c == '”' {
-            return true;
-        }
-    }
-    false
-}
 
 fn write_i64_i64_map_to_csv(
     file_name: &str,
@@ -72,27 +48,22 @@ fn process_line(
     line: Result<String, std::io::Error>,
     word_freq: &DashMap<String, i64>,
     next_word_freq: &DashMap<(String, String), i64>,
-    cws: &CWSModel,
+    jieba: &Jieba,
 ) {
     if let Ok(text) = line {
         let text_lines: Vec<&str> = text.split('\n').collect();
         for t_line in text_lines {
-            if let Ok(tokenized_words) = cws.predict(t_line) {
-                let mut prev_word: &str = "";
-                for token in tokenized_words {
-                    if contains_special_characters(token) {
-                        prev_word = "";
-                        continue;
-                    }
-                    *word_freq.entry(token.to_string()).or_insert(0) += 1;
+            let tokenized_words = jieba.cut(t_line, false);
+            let mut prev_word: &str = "";
+            for token in tokenized_words {
+                *word_freq.entry(token.to_string()).or_insert(0) += 1;
 
-                    if !prev_word.is_empty() {
-                        *next_word_freq
-                            .entry((prev_word.to_string(), token.to_string()))
-                            .or_insert(0) += 1;
-                    }
-                    prev_word = token;
+                if !prev_word.is_empty() {
+                    *next_word_freq
+                        .entry((prev_word.to_string(), token.to_string()))
+                        .or_insert(0) += 1;
                 }
+                prev_word = token;
             }
         }
     }
@@ -102,21 +73,17 @@ fn process_line_from_json(
     json_text: &str,
     word_freq: &DashMap<String, i64>,
     next_word_freq: &DashMap<(String, String), i64>,
-    cws: &CWSModel,
+    jieba: &Jieba,
 ) {
     // 解析JSON，获取text字段
     if let Ok(parsed_json) = serde_json::from_str::<serde_json::Value>(json_text) {
         if let Some(text_value) = parsed_json.get("text") {
             if let Some(text) = text_value.as_str() {
                 // 进行分词
-                let tokenized_words = cws.predict(text).unwrap_or_else(|_| Vec::new());
+                let tokenized_words = jieba.cut(text, false);
 
                 let mut prev_word: &str = "";
                 for token in tokenized_words {
-                    if contains_special_characters(token) {
-                        prev_word = "";
-                        continue;
-                    }
                     *word_freq.entry(token.to_string()).or_insert(0) += 1;
 
                     if !prev_word.is_empty() {
@@ -132,8 +99,7 @@ fn process_line_from_json(
 }
 
 fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
-    let file = File::open("model/legacy/cws_model.bin")?;
-    let cws: CWSModel = ModelSerde::load(file, Format::AVRO(Codec::Deflate))?;
+    let jieba = Jieba::new();
 
     fs::create_dir_all("results/word_freq")?;
     fs::create_dir_all("results/next_word_freq")?;
@@ -184,10 +150,10 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
                         &line.unwrap_or_default(),
                         &word_freq,
                         &next_word_freq,
-                        &cws,
+                        &jieba,
                     ),
                     Some(ext) if ext == "txt" => {
-                        process_line(line, &word_freq, &next_word_freq, &cws)
+                        process_line(line, &word_freq, &next_word_freq, &jieba)
                     }
                     _ => (),
                 });
@@ -200,7 +166,7 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
 
             write_tuple_i64_i64_map_to_csv(&file_name_next_word_freq, &next_word_freq).unwrap();
 
-            println!("{}", file_name);
+            println!("{} complete", file_name);
 
             // Mark the file as processed
             processed_files.insert(file_name.clone());

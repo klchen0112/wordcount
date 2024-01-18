@@ -8,6 +8,5 @@ edition = "2021"
 [dependencies]
 dashmap = { version = "5.5.3", features = ["rayon"] }
 jieba-rs = "0.6.8"
-ltp = {version = "0.1.8",features = ["serialization"],git = "https://github.com/HIT-SCIR/ltp",rev="b4c408e" }
 rayon = "1.8.0"
 serde_json = "1.0.108"
