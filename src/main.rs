@@ -1,6 +1,8 @@
+use csv::Writer;
 use dashmap::{DashMap, DashSet};
 use jieba_rs::Jieba;
 use rayon::prelude::*;
+use rusqlite::{params, Connection};
 use std::env;
 use std::error::Error;
 use std::fs;
@@ -10,36 +12,38 @@ use std::io::BufWriter;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
-fn write_i64_i64_map_to_csv(
-    file_name: &str,
+fn write_i64_i64_map_to_sqlite(
+    conn: &mut Connection,
     map: &DashMap<String, i64>,
 ) -> Result<(), Box<dyn Error>> {
-    let file = File::create(file_name).expect("Failed to create file");
-    let mut writer = BufWriter::new(file);
-
+    let transaction = conn.transaction()?;
     for pair in map.iter() {
-        let (key, value) = pair.pair();
-        writeln!(writer, "{},{}", key, value).expect("Failed to write to file");
+        let (word1, frequency) = pair.pair();
+        // 使用事务中的 SQLite 语句插入数据
+        transaction.execute(
+            "INSERT OR REPLACE INTO word_freq (word, frequency) VALUES (?, COALESCE((SELECT frequency FROM word_freq WHERE word1 = ?), 0) + ?)",
+            [word1,word1,  &frequency.to_string()],
+        )?;
     }
-
-    writer.flush().expect("Failed to flush buffer");
-
+    transaction.commit()?;
     Ok(())
 }
 
-fn write_tuple_i64_i64_map_to_csv(
-    file_name: &str,
+fn write_tuple_i64_i64_map_to_sqlite(
+    conn: &mut Connection,
     map: &DashMap<(String, String), i64>,
 ) -> Result<(), Box<dyn Error>> {
-    let file = File::create(file_name).expect("Failed to create file");
-    let mut writer = BufWriter::new(file);
+    let transaction = conn.transaction()?;
 
     for pair in map.iter() {
-        let ((key1, key2), value) = pair.pair();
-        writeln!(writer, "{},{},{}", key1, key2, value).expect("Failed to write to file");
+        let ((word1, word2), frequency) = pair.pair();
+        // 使用事务中的 SQLite 语句插入数据
+        transaction.execute(
+            "INSERT OR REPLACE INTO next_word_freq (word1, word2, frequency) VALUES (?, ?, COALESCE((SELECT frequency FROM next_word_freq WHERE word1 = ? AND word2 = ?), 0) + ?)",
+            [word1, word2,word1, word2,  &frequency.to_string()],
+        )?;
     }
-
-    writer.flush().expect("Failed to flush buffer");
+    transaction.commit()?;
 
     Ok(())
 }
@@ -101,8 +105,19 @@ fn process_line_from_json(
 fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
     let jieba = Jieba::new();
 
-    fs::create_dir_all("results/word_freq")?;
-    fs::create_dir_all("results/next_word_freq")?;
+    // SQLite Connection
+    let mut conn = Connection::open("results/data.db")?;
+
+    // Create tables if not exists
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS word_freq (word TEXT PRIMARY KEY, frequency INTEGER)",
+        params![],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS next_word_freq (word1 TEXT, word2 TEXT, frequency INTEGER, PRIMARY KEY (word1, word2), FOREIGN KEY (word1) REFERENCES word_freq(word) ON DELETE CASCADE, FOREIGN KEY (word2) REFERENCES word_freq(word) ON DELETE CASCADE)",
+        params![],
+    )?;
+
     let processed_files: DashSet<String> = DashSet::new(); // Store processed filenames
     if let Ok(visit_file) = File::open("results/visit.txt") {
         let visit_reader = BufReader::new(visit_file);
@@ -157,14 +172,8 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
                     }
                     _ => (),
                 });
-            rayon::join(|| {}, || {});
-
-            let file_name_word_freq = format!("results/word_freq/{}.csv", file_name);
-            let file_name_next_word_freq = format!("results/next_word_freq/{}.csv", file_name);
-
-            write_i64_i64_map_to_csv(&file_name_word_freq, &word_freq).unwrap();
-
-            write_tuple_i64_i64_map_to_csv(&file_name_next_word_freq, &next_word_freq).unwrap();
+            write_i64_i64_map_to_sqlite(&mut conn, &word_freq)?;
+            write_tuple_i64_i64_map_to_sqlite(&mut conn, &next_word_freq)?;
 
             println!("{} complete", file_name);
 
@@ -177,6 +186,62 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
         }
     }
 
+    // 在处理 JSONL 文件后，将以下代码添加到导出表到 CSV 文件的位置
+    if let Err(e) = write_table_to_csv(&conn, "word_freq", "word_freq.csv") {
+        eprintln!("Error writing word_freq to CSV: {}", e);
+    }
+
+    if let Err(e) = write_next_word_freq_to_csv(&conn, "next_word_freq.csv") {
+        eprintln!("Error writing next_word_freq to CSV: {}", e);
+    }
+    Ok(())
+}
+
+fn write_table_to_csv(
+    conn: &Connection,
+    table_name: &str,
+    file_path: &str,
+) -> Result<(), Box<dyn Error>> {
+    let file = File::create(file_path)?;
+    let mut writer = Writer::from_writer(file);
+
+    // Query table data
+    let mut stmt = conn.prepare(&format!("SELECT * FROM {}", table_name))?;
+    let rows = stmt.query_map(params![], |row| {
+        // Adjust column indices and types based on your table structure
+        Ok((row.get::<usize, String>(0)?, row.get::<usize, i64>(1)?))
+    })?;
+
+    for row in rows {
+        let (column1, column2) = row?;
+        writer.write_record(&[column1, column2.to_string()])?;
+    }
+
+    writer.flush()?;
+    Ok(())
+}
+
+fn write_next_word_freq_to_csv(conn: &Connection, file_path: &str) -> Result<(), Box<dyn Error>> {
+    let file = File::create(file_path)?;
+    let mut writer = Writer::from_writer(file);
+
+    // Query next_word_freq table data
+    let mut stmt = conn.prepare("SELECT * FROM next_word_freq")?;
+    let rows = stmt.query_map(params![], |row| {
+        // Adjust column indices and types based on your table structure
+        Ok((
+            row.get::<usize, String>(0)?,
+            row.get::<usize, String>(1)?,
+            row.get::<usize, i64>(2)?,
+        ))
+    })?;
+
+    for row in rows {
+        let (column1, column2, column3) = row?;
+        writer.write_record(&[column1, column2, column3.to_string()])?;
+    }
+
+    writer.flush()?;
     Ok(())
 }
 

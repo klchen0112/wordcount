@@ -2,6 +2,7 @@
 /data
 /model
 *.csv
+results
 
 # Devenv
 .devenv*
@@ -13,4 +14,3 @@ devenv.local.nix
 # pre-commit
 .pre-commit-config.yaml
 
-word_freq.*
