@@ -75,7 +75,7 @@ fn process_line(
 ) {
     let text_lines: Vec<&str> = line.split('\n').collect();
     for t_line in text_lines {
-        let tokenized_words = jieba.cut(t_line, false);
+        let tokenized_words = jieba.cut(t_line, true);
         let mut prev_word: &str = "";
         for token in tokenized_words {
             *word_freq.entry(token.to_string()).or_insert(0) += 1;
@@ -101,7 +101,7 @@ fn process_line_from_json(
         if let Some(text_value) = parsed_json.get("text") {
             if let Some(text) = text_value.as_str() {
                 // 进行分词
-                let tokenized_words = jieba.cut(text, false);
+                let tokenized_words = jieba.cut(text, true);
 
                 let mut prev_word: &str = "";
                 for token in tokenized_words {
