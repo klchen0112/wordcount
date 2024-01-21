@@ -1,4 +1,4 @@
-use csv::Writer;
+use csv::WriterBuilder;
 use dashmap::{DashMap, DashSet};
 use jieba_rs::Jieba;
 use rayon::prelude::*;
@@ -68,26 +68,24 @@ fn write_tuple_i64_i64_map_to_sqlite(
 }
 
 fn process_line(
-    line: Result<String, std::io::Error>,
+    line: &str,
     word_freq: &DashMap<String, i64>,
     next_word_freq: &DashMap<(String, String), i64>,
     jieba: &Jieba,
 ) {
-    if let Ok(text) = line {
-        let text_lines: Vec<&str> = text.split('\n').collect();
-        for t_line in text_lines {
-            let tokenized_words = jieba.cut(t_line, false);
-            let mut prev_word: &str = "";
-            for token in tokenized_words {
-                *word_freq.entry(token.to_string()).or_insert(0) += 1;
+    let text_lines: Vec<&str> = line.split('\n').collect();
+    for t_line in text_lines {
+        let tokenized_words = jieba.cut(t_line, false);
+        let mut prev_word: &str = "";
+        for token in tokenized_words {
+            *word_freq.entry(token.to_string()).or_insert(0) += 1;
 
-                if !prev_word.is_empty() {
-                    *next_word_freq
-                        .entry((prev_word.to_string(), token.to_string()))
-                        .or_insert(0) += 1;
-                }
-                prev_word = token;
+            if !prev_word.is_empty() {
+                *next_word_freq
+                    .entry((prev_word.to_string(), token.to_string()))
+                    .or_insert(0) += 1;
             }
+            prev_word = token;
         }
     }
 }
@@ -181,14 +179,17 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
                 .par_bridge()
                 .for_each(|line| match path.extension() {
                     Some(ext) if ext == "jsonl" => process_line_from_json(
-                        &line.unwrap_or_default(),
+                        line.expect("REASON").trim(),
                         &word_freq,
                         &next_word_freq,
                         &jieba,
                     ),
-                    Some(ext) if ext == "txt" => {
-                        process_line(line, &word_freq, &next_word_freq, &jieba)
-                    }
+                    Some(ext) if ext == "txt" => process_line(
+                        line.expect("REASON").trim(),
+                        &word_freq,
+                        &next_word_freq,
+                        &jieba,
+                    ),
                     _ => (),
                 });
             write_i64_i64_map_to_sqlite(&mut conn, &word_freq, 2000)?;
@@ -206,7 +207,7 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
     }
 
     // 在处理 JSONL 文件后，将以下代码添加到导出表到 CSV 文件的位置
-    if let Err(e) = write_table_to_csv(&conn, "word_freq", "word_freq.csv") {
+    if let Err(e) = write_table_to_csv(&conn, "word_freq.csv") {
         eprintln!("Error writing word_freq to CSV: {}", e);
     }
 
@@ -216,16 +217,12 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn write_table_to_csv(
-    conn: &Connection,
-    table_name: &str,
-    file_path: &str,
-) -> Result<(), Box<dyn Error>> {
+fn write_table_to_csv(conn: &Connection, file_path: &str) -> Result<(), Box<dyn Error>> {
     let file = File::create(file_path)?;
-    let mut writer = Writer::from_writer(file);
+    let mut writer = WriterBuilder::new().delimiter(b'\t').from_writer(file);
 
     // Query table data
-    let mut stmt = conn.prepare(&format!("SELECT * FROM {}", table_name))?;
+    let mut stmt = conn.prepare("SELECT * FROM word_freq ORDER BY frequency DESC")?;
     let rows = stmt.query_map(params![], |row| {
         // Adjust column indices and types based on your table structure
         Ok((row.get::<usize, String>(0)?, row.get::<usize, i64>(1)?))
@@ -242,10 +239,10 @@ fn write_table_to_csv(
 
 fn write_next_word_freq_to_csv(conn: &Connection, file_path: &str) -> Result<(), Box<dyn Error>> {
     let file = File::create(file_path)?;
-    let mut writer = Writer::from_writer(file);
+    let mut writer = WriterBuilder::new().delimiter(b'\t').from_writer(file);
 
     // Query next_word_freq table data
-    let mut stmt = conn.prepare("SELECT * FROM next_word_freq")?;
+    let mut stmt = conn.prepare("SELECT * FROM next_word_freq ORDER BY frequency DESC")?;
     let rows = stmt.query_map(params![], |row| {
         // Adjust column indices and types based on your table structure
         Ok((
