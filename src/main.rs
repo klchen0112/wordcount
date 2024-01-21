@@ -15,15 +15,25 @@ use std::path::PathBuf;
 fn write_i64_i64_map_to_sqlite(
     conn: &mut Connection,
     map: &DashMap<String, i64>,
+    commit_interval: usize, // 添加参数，表示适时提交的间隔
 ) -> Result<(), Box<dyn Error>> {
-    let transaction = conn.transaction()?;
+    let mut transaction = conn.transaction()?;
+    let mut counter = 0; // 初始化计数器
     for pair in map.iter() {
         let (word1, frequency) = pair.pair();
         // 使用事务中的 SQLite 语句插入数据
         transaction.execute(
-            "INSERT OR REPLACE INTO word_freq (word, frequency) VALUES (?, COALESCE((SELECT frequency FROM word_freq WHERE word1 = ?), 0) + ?)",
+            "INSERT OR REPLACE INTO word_freq (word, frequency) VALUES (?, COALESCE((SELECT frequency FROM word_freq WHERE word = ?), 0) + ?)",
             [word1,word1,  &frequency.to_string()],
         )?;
+
+        counter += 1;
+
+        if counter % commit_interval == 0 {
+            // 当计数器达到设定的提交间隔时，提交事务并重置计数器
+            transaction.commit()?;
+            transaction = conn.transaction()?;
+        }
     }
     transaction.commit()?;
     Ok(())
@@ -32,9 +42,10 @@ fn write_i64_i64_map_to_sqlite(
 fn write_tuple_i64_i64_map_to_sqlite(
     conn: &mut Connection,
     map: &DashMap<(String, String), i64>,
+    commit_interval: usize, // 添加参数，表示适时提交的间隔
 ) -> Result<(), Box<dyn Error>> {
-    let transaction = conn.transaction()?;
-
+    let mut transaction = conn.transaction()?;
+    let mut counter = 0; // 初始化计数器
     for pair in map.iter() {
         let ((word1, word2), frequency) = pair.pair();
         // 使用事务中的 SQLite 语句插入数据
@@ -42,6 +53,14 @@ fn write_tuple_i64_i64_map_to_sqlite(
             "INSERT OR REPLACE INTO next_word_freq (word1, word2, frequency) VALUES (?, ?, COALESCE((SELECT frequency FROM next_word_freq WHERE word1 = ? AND word2 = ?), 0) + ?)",
             [word1, word2,word1, word2,  &frequency.to_string()],
         )?;
+
+        counter += 1;
+
+        if counter % commit_interval == 0 {
+            // 当计数器达到设定的提交间隔时，提交事务并重置计数器
+            transaction.commit()?;
+            transaction = conn.transaction()?;
+        }
     }
     transaction.commit()?;
 
@@ -172,8 +191,8 @@ fn process_jsonl_files(directory_path: &str) -> Result<(), Box<dyn Error>> {
                     }
                     _ => (),
                 });
-            write_i64_i64_map_to_sqlite(&mut conn, &word_freq)?;
-            write_tuple_i64_i64_map_to_sqlite(&mut conn, &next_word_freq)?;
+            write_i64_i64_map_to_sqlite(&mut conn, &word_freq, 2000)?;
+            write_tuple_i64_i64_map_to_sqlite(&mut conn, &next_word_freq, 1000)?;
 
             println!("{} complete", file_name);
 
@@ -246,7 +265,7 @@ fn write_next_word_freq_to_csv(conn: &Connection, file_path: &str) -> Result<(),
 }
 
 fn main() {
-    env::set_var("RAYON_NUM_THREADS", "8");
+    env::set_var("RAYON_NUM_THREADS", "16");
     if let Err(e) = process_jsonl_files("data") {
         eprintln!("Error: {}", e);
     } else {
