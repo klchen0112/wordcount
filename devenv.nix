@@ -16,7 +16,7 @@
   languages.rust = {
     enable = true;
     # https://devenv.sh/reference/options/#languagesrustchannel
-    channel = "nightly";
+    channel = "nixpkgs";
 
     components = [ "rustc" "cargo" "clippy" "rustfmt" "rust-analyzer" ];
   };
@@ -26,7 +26,9 @@
     git
     libiconvReal
     sqlite
-  ];
+  ] ++ lib.optionals pkgs.stdenv.isDarwin (with pkgs.darwin.apple_sdk; [
+    frameworks.Security
+  ]);
 
   # https://devenv.sh/pre-commit-hooks/
   pre-commit.hooks = {
